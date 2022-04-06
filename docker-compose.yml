@@ -9,14 +9,23 @@ services:
    node1:
      container_name: Node1
      build: Node/.
+     environment: 
+        hostname: "Node1"
+        targets: "Node2,Node3"
 
    node2:
      container_name: Node2
      build: Node/.
+     environment: 
+        hostname: "Node2"
+        targets: "Node1,Node3"
 
    node3:
        container_name: Node3
        build: Node/.
+       environment: 
+        hostname: "Node3"
+        targets: "Node2,Node1"
 
    #Do not change the part below
    controller:

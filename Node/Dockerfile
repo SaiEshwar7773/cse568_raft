@@ -4,3 +4,4 @@ COPY . .
 
 EXPOSE 5555
 
+ENTRYPOINT ["python", "-u", "node.py"]

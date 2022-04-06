@@ -4,7 +4,7 @@ import traceback
 import time
 
 # Wait following seconds below sending the controller request
-time.sleep(5)
+time.sleep(10)
 
 # Read Message Template
 msg = json.load(open("Message.json"))
@@ -27,6 +27,7 @@ skt.bind((sender, port))
 try:
     # Encoding and sending the message
     skt.sendto(json.dumps(msg).encode('utf-8'), (target, port))
+    # pass
 except:
     #  socket.gaierror: [Errno -3] would be thrown if target IP container does not exist or exits, write your listener
     print(f"ERROR WHILE SENDING REQUEST ACROSS : {traceback.format_exc()}")
