@@ -38,6 +38,7 @@ services:
        environment:
          hostname: "Controller"
          term: 0
+         targets: "Node1,Node2,Node3"
 
 
 

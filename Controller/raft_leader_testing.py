@@ -1,23 +1,17 @@
-import json
 import socket
-import traceback
-import threading
 import time
+import threading
+import json
+import traceback
 
-from os import environ
+from os import environ 
 
 
 # Constants
 MAJORITY = 3
+STD_TIMEOUT = 1
 
-# Wait following seconds below sending the controller request
-time.sleep(10)
-
-# Read Message Template
-msg = json.load(open("Message.json"))
-
-# Initialize
-sender = "Controller"
+# Initialize 
 targets = ["Node1","Node2","Node3"]
 port = 5555
 
@@ -25,11 +19,7 @@ port = 5555
 # Initialize for Canditate
 votes_recived = 0
 voting_completed = False
-
-# Request
-msg['sender_name'] = sender
-msg['request'] = "CONVERT_FOLLOWER"
-print(f"Request Created : {msg}")
+ 
 
 
 
@@ -50,23 +40,10 @@ def request_vote(skt):
     msg_bytes = json.dumps(msg).encode('utf-8')
     for target in targets:
         skt.sendto(msg_bytes, (target, 5555))
-    time.sleep(1)
 
 
-# Candidate Listen -- Receive vote
-def receive_vote(skt,voter):
-    global votes_received
-    global voting_completed 
-    if not voting_completed:
-        votes_received += 1
-        print("Recieved vote from", voter, ". The Vote count is now ", votes_received)
-        if votes_received >= MAJORITY: 
-            voting_completed = True
-            threading.Thread(target=set_leader_msg_all_nodes, args=[sender_skt]).start() # candidate sends leader update to all followers
-            time.sleep(1)
 
-
-# Send Message From Leader
+# Send Message From --- Leader --- to followers
 def set_leader_msg_all_nodes(skt):
     msg = {
         "type" : "AppendEntry",
@@ -77,48 +54,129 @@ def set_leader_msg_all_nodes(skt):
         }
     msg_bytes = json.dumps(msg).encode('utf-8')
     for target in targets:
-        sender_skt.sendto(msg_bytes, (target, 5555))
-    time.sleep(1)
+        skt.sendto(msg_bytes, (target, 5555))
 
-# Process Listened Message --- Universal i.e. for Leader, Follower, Candidate
-def process_msg(msg, skt):
-    message_type = msg["type"]
-    message_body = msg["body"]
-    if message_type == "CastVote":
-        if "sender_name" in message_body:
-            receive_vote(skt, message_body["sender_name"])
+# Send heartbeats From --- Leader --- to followers
+def send_heartbeat(skt):
+    msg = {
+        "type" : "AppendEntry",
+        "body":
+            {
+            }   
+        }
+    msg_bytes = json.dumps(msg).encode('utf-8')
+    while True:
+        print("Heartbeat send!!!!")
+        for target in targets:
+            skt.sendto(msg_bytes, (target, 5555))
+        time.sleep(3000)
 
-# Listener --- Universal i.e. for Leader, Follower, Candidate
+# Listener -- Universal
 def listener(skt):
     print(f"Starting Listener")
-    counter=0
     while True:
         try:
             msg, addr = skt.recvfrom(1024)
         except:
             print(f"ERROR while fetching from socket : {traceback.print_exc()}")
+
         # Decoding the Message received from Node 1
         decoded_msg = json.loads(msg.decode('utf-8'))
         print(f"Message Received : {decoded_msg} From : {addr}")
-        threading.Thread(target=process_msg, args=[decoded_msg, sender_skt]).start() #processing thread is separate
+
+        process_msg(decoded_msg, skt)
+    print("Exiting Listener Function")
 
 
 
-# Socket Creation and Binding
-sender_skt = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
-sender_skt.bind((sender, port))
+# Listener  -- Universal Process Message 
+def process_msg(msg, skt):
+    message_type = msg["type"]
+    message_body = msg["body"]
+    if message_type == "AppendEntry":#Message from Leader -- valid for follower
+        if "leader_name" in message_body:
+            set_raft_leader(message_body["leader_name"])
+    if message_type == "RequestVote":
+        if "candidate_name" in message_body:
+            cast_vote(skt, message_body["candidate_name"], message_body["term"])
+    if message_type == "CastVote":
+        if "sender_name" in message_body:
+            receive_vote(skt, message_body["sender_name"])
+ 
+    
+# Listen --- Candidate ---- Receive vote
+def receive_vote(skt,voter):
+    global votes_received
+    global voting_completed 
+    if not voting_completed:
+        votes_received += 1
+        print("Recieved vote from", voter, ". The Vote count is now ", votes_received)
+        if votes_received >= MAJORITY: 
+            voting_completed = True
+            threading.Thread(target=set_leader_msg_all_nodes, args=[skt]).start() # candidate sends leader update to all followers
 
-# Send Message
-try:
-    # Candidate Sender thread
-    threading.Thread(target=request_vote, args=[sender_skt]).start()
 
-    #Starting listener
-    listen_thread = threading.Thread(target=listener, args=[sender_skt])
+# Listen --- Follower --- Cast vote
+def cast_vote(skt,target,term):
+    if term>int(environ.get("term")):
+        msg = {
+            "type" : "CastVote",
+            "body":
+                {
+                    "sender_name": environ.get("hostname")
+                }   
+            }
+        msg_bytes = json.dumps(msg).encode('utf-8')
+        skt.sendto(msg_bytes, (target, 5555))
+        environ['votedFor'] = target
+
+
+#Listen -- follower
+def set_raft_leader(raft_leader):
+    environ['raft_leader'] = raft_leader
+    print(environ.get("hostname") ," set leader to: " , environ.get("raft_leader"))
+
+#Listen -- follower  -- look out for heartbeats
+def lookout_for_heartbeats():
+    global heartbeat_timer
+    while True:
+        curr_time = time.time()
+        print("timer diff   -->", curr_time - heartbeat_timer)
+        if (curr_time - heartbeat_timer > 3*STD_TIMEOUT):
+            set_raft_state("raft_candidate")
+            break
+        time.sleep(STD_TIMEOUT)
+
+#Listen -- Universal
+def set_raft_state(raft_state):
+    environ['raft_state'] = raft_state
+    print(environ.get("hostname") ," set to raft state: " , environ.get("raft_state"))
+    if raft_state == "raft_follower":
+        threading.Thread(target=lookout_for_heartbeats, args=[]).start()
+    if raft_state == "raft_candidate":
+        threading.Thread(target=request_vote, args=[UDP_Socket]).start()
+    if raft_state == "raft_leader":
+        notify_thread = threading.Thread(target=set_leader_msg_all_nodes, args=[UDP_Socket])
+        notify_thread.start()
+        notify_thread.join()
+        heart_beat_thread = threading.Thread(target=send_heartbeat, args=[UDP_Socket])
+        heart_beat_thread.start()
+        heart_beat_thread.join()
+
+
+
+sender = environ.get("hostname")
+# Creating Socket and binding it to the target container IP and port
+UDP_Socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
+
+# Bind the node to sender ip and port
+UDP_Socket.bind((sender, 5555))
+
+if __name__ == "__main__":
+    print("starting ",environ.get("hostname"))
+
+    set_raft_state("raft_leader")
+    
+    #Starting thread 1
+    listen_thread = threading.Thread(target=listener, args=[UDP_Socket])
     listen_thread.start()
-
-
-except:
-    #  socket.gaierror: [Errno -3] would be thrown if target IP container does not exist or exits, write your listener
-    print(f"ERROR WHILE SENDING REQUEST ACROSS : {traceback.format_exc()}")
-
