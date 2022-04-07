@@ -61,12 +61,12 @@ def receive_vote(skt,voter):
     print("Recived vote from ", voter)
     print("vote count", votes_received)
     if votes_received>=3: 
-        set_leader_msg_all_nodes(skt)
+        threading.Thread(target=set_leader_msg_all_nodes, args=[sender_skt]).start()
     
 
 
 
-
+# Send Message From Leader
 def set_leader_msg_all_nodes(skt):
     msg = {
         "type" : "AppendEntry",
@@ -77,12 +77,12 @@ def set_leader_msg_all_nodes(skt):
         }
     msg_bytes = json.dumps(msg).encode('utf-8')
     for target in targets:
-        skt.sendto(msg_bytes, (target, 5555))
+        sender_skt.sendto(msg_bytes, (target, 5555))
     time.sleep(1)
         
 
 
-# Listener
+# Listener --- Universal i.e. for Leader, Follower, Candidate
 def listener(skt):
     print(f"Starting Listener")
     counter=0
@@ -95,8 +95,7 @@ def listener(skt):
         # Decoding the Message received from Node 1
         decoded_msg = json.loads(msg.decode('utf-8'))
         print(f"Message Received : {decoded_msg} From : {addr}")
-
-        process_msg(decoded_msg, skt)
+        threading.Thread(target=process_msg, args=[decoded_msg, skt]) #processing thread is separate
         if counter >= 4:
             break
         counter+=1
@@ -113,7 +112,11 @@ try:
     threading.Thread(target=request_vote, args=[sender_skt]).start()
 
     #Starting listener
-    threading.Thread(target=listener, args=[sender_skt]).start()
+    listen_thread = threading.Thread(target=listener, args=[sender_skt])
+    listen_thread.start()
+    listen_thread.join()
+
+    
 
 
 except:
