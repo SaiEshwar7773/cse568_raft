@@ -12,6 +12,7 @@ services:
      environment: 
         hostname: "Node1"
         targets: "Node2,Node3"
+        term: 0
 
    node2:
      container_name: Node2
@@ -19,6 +20,7 @@ services:
      environment: 
         hostname: "Node2"
         targets: "Node1,Node3"
+        term: 0
 
    node3:
        container_name: Node3
@@ -26,12 +28,17 @@ services:
        environment: 
         hostname: "Node3"
         targets: "Node2,Node1"
+        term: 0
 
    #Do not change the part below
    controller:
        container_name: Controller
        build: Controller/.
        stdin_open: true
+       environment:
+         hostname: "Controller"
+         term: 0
+
 
 
 
