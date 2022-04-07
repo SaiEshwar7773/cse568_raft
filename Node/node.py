@@ -10,6 +10,8 @@ from os import environ
 import time
 import random
 
+
+
 # Constants
 MAJORITY = len(environ.get("targets").split(","))//2 + 1
 STD_TIMEOUT = 0.15
@@ -43,33 +45,39 @@ def request_vote(skt):
     votes_received = 1 
     global voting_completed 
     voting_completed = False
+    environ["term"] = str(int(environ.get("term")) + 1)
     msg = {
-        "type" : "RequestVote",
-        "body":
-            {
-                "candidate_name": environ.get("hostname"),
-                "term": int(environ.get("term"))+1
-            }   
-        }
+            "type" : "RequestVoteRPC",
+            "term" : environ.get("term"),
+            "candidate_id": environ.get("hostname"),
+            "prevLogIndex" : -1,
+            "prevLogTerm" : -1 } 
     msg_bytes = json.dumps(msg).encode('utf-8')
     for target in targets:
-        skt.sendto(msg_bytes, (target, 5555))
+        try:
+            print(environ.get("hostname"), "requesting vote from", target)
+            skt.sendto(msg_bytes, (target, 5555))
+        except Exception as e:
+            pass
 
 
 
 # Send Message From --- Leader --- to followers
 def set_leader_msg_all_nodes(skt):
     msg = {
-        "type" : "AppendEntry",
-        "term" : environ.get("term"),
-        "leaderId": environ.get("hostname"),
-        "entries" : ["leader_update"],
-        "prevLogIndex" : -1,
-        "prevLogTerm" : -1
+            "type" : "AppendEntry",
+            "term" : environ.get("term"),
+            "leaderId": environ.get("hostname"),
+            "entries" : ["leader_update"],
+            "prevLogIndex" : -1,
+            "prevLogTerm" : -1
         }
     msg_bytes = json.dumps(msg).encode('utf-8')
     for target in targets:
-        skt.sendto(msg_bytes, (target, 5555))
+        try:
+            skt.sendto(msg_bytes, (target, 5555))
+        except:
+            pass
 
 # Send heartbeats From --- Leader --- to followers
 def send_heartbeat(skt):
@@ -82,9 +90,12 @@ def send_heartbeat(skt):
         "prevLogTerm" : -1
         }
     msg_bytes = json.dumps(msg).encode('utf-8')
-    while True:
+    while environ.get("raft_state") == "raft_leader":
         for target in targets:
-            skt.sendto(msg_bytes, (target, 5555))
+            try:
+                skt.sendto(msg_bytes, (target, 5555))
+            except:
+                pass
         time.sleep(STD_TIMEOUT)
 
 
@@ -116,18 +127,19 @@ def process_msg(msg, skt):
                 set_raft_leader(msg["leaderId"])
         elif  not msg["entries"]:
             receive_heartbeat()
-    if message_type == "RequestVote":
-        if "candidate_name" in msg['body']:
-            cast_vote(skt, msg['body']["candidate_name"], msg['body']["term"])
-    if message_type == "CastVote":
-        if "sender_name" in msg['body']:
-            receive_vote(skt, msg['body']["sender_name"])
+    if message_type == "RequestVoteRPC":
+        if "candidate_id" in msg:
+            cast_vote(skt, msg["candidate_id"], int(msg["term"]))
+    if message_type == "ResponseVoteRPC":
+        if "follower_id" in msg:
+            receive_vote(skt, msg["follower_id"])
  
     
 # Listen --- Candidate ---- Receive vote
 def receive_vote(skt,voter):
     global votes_received
     global voting_completed 
+    print(voting_completed)
     if not voting_completed:
         votes_received += 1
         print(environ.get("hostname"),"Recieved vote from", voter, ". The Vote count is now ", votes_received)
@@ -145,12 +157,12 @@ def receive_heartbeat():
 def cast_vote(skt,target,term):
     if term>int(environ.get("term")):
         msg = {
-            "type" : "CastVote",
-            "body":
-                {
-                    "sender_name": environ.get("hostname")
-                }
-            }
+            "type" : "ResponseVoteRPC",
+            "term" : environ.get("term"),
+            "follower_id": environ.get("hostname"),
+            "prevLogIndex" : -1,
+            "prevLogTerm" : -1
+        }
         msg_bytes = json.dumps(msg).encode('utf-8')
         skt.sendto(msg_bytes, (target, 5555))
         environ['votedFor'] = target
