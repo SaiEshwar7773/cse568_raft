@@ -6,21 +6,31 @@ import traceback
 
 from os import environ 
 
+import time
 
 # Constants
 MAJORITY = 3
 STD_TIMEOUT = 1
 
-# Initialize 
-targets = ["Node1","Node2","Node3"]
+
+# Initialize
+sender = "Controller"
+targets = environ.get("targets").split(",")
 port = 5555
+heartbeat_timer = time.time()
 
 
 # Initialize for Canditate
-votes_recived = 0
+votes_received = 0
 voting_completed = False
  
-
+state_info = {
+    "current_term": 0,
+    "voted_for": None,
+    "log": [],
+    "timeout": STD_TIMEOUT,
+    "heartbeat": STD_TIMEOUT
+}
 
 
 # Send Message From Candidate -- Request Vote
@@ -66,10 +76,11 @@ def send_heartbeat(skt):
         }
     msg_bytes = json.dumps(msg).encode('utf-8')
     while True:
-        print("Heartbeat send!!!!")
         for target in targets:
             skt.sendto(msg_bytes, (target, 5555))
-        time.sleep(3000)
+        time.sleep(STD_TIMEOUT)
+
+
 
 # Listener -- Universal
 def listener(skt):
@@ -82,7 +93,7 @@ def listener(skt):
 
         # Decoding the Message received from Node 1
         decoded_msg = json.loads(msg.decode('utf-8'))
-        print(f"Message Received : {decoded_msg} From : {addr}")
+        # print(f"Message Received : {decoded_msg} From : {addr}")
 
         process_msg(decoded_msg, skt)
     print("Exiting Listener Function")
@@ -96,6 +107,8 @@ def process_msg(msg, skt):
     if message_type == "AppendEntry":#Message from Leader -- valid for follower
         if "leader_name" in message_body:
             set_raft_leader(message_body["leader_name"])
+        if  not message_body:
+            receive_heartbeat()
     if message_type == "RequestVote":
         if "candidate_name" in message_body:
             cast_vote(skt, message_body["candidate_name"], message_body["term"])
@@ -110,11 +123,16 @@ def receive_vote(skt,voter):
     global voting_completed 
     if not voting_completed:
         votes_received += 1
-        print("Recieved vote from", voter, ". The Vote count is now ", votes_received)
+        print(environ.get("hostname"),"Recieved vote from", voter, ". The Vote count is now ", votes_received)
         if votes_received >= MAJORITY: 
             voting_completed = True
-            threading.Thread(target=set_leader_msg_all_nodes, args=[skt]).start() # candidate sends leader update to all followers
+            set_raft_state("raft_leader")
 
+# Listen --- Follower --- Heartbeat
+def receive_heartbeat():
+    global heartbeat_timer
+    print( "Heartbeat received from: " , environ.get("raft_leader")," at ",environ.get("hostname"))
+    heartbeat_timer = time.time()
 
 # Listen --- Follower --- Cast vote
 def cast_vote(skt,target,term):
@@ -129,23 +147,24 @@ def cast_vote(skt,target,term):
         msg_bytes = json.dumps(msg).encode('utf-8')
         skt.sendto(msg_bytes, (target, 5555))
         environ['votedFor'] = target
-
+        environ['term'] = str(term)
 
 #Listen -- follower
 def set_raft_leader(raft_leader):
     environ['raft_leader'] = raft_leader
     print(environ.get("hostname") ," set leader to: " , environ.get("raft_leader"))
 
-#Listen -- follower  -- look out for heartbeats
+
 def lookout_for_heartbeats():
     global heartbeat_timer
+    
     while True:
         curr_time = time.time()
-        print("timer diff   -->", curr_time - heartbeat_timer)
         if (curr_time - heartbeat_timer > 3*STD_TIMEOUT):
             set_raft_state("raft_candidate")
             break
         time.sleep(STD_TIMEOUT)
+
 
 #Listen -- Universal
 def set_raft_state(raft_state):
@@ -164,19 +183,20 @@ def set_raft_state(raft_state):
         heart_beat_thread.join()
 
 
-
-sender = environ.get("hostname")
 # Creating Socket and binding it to the target container IP and port
 UDP_Socket = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
 
+sender = environ.get("hostname")
 # Bind the node to sender ip and port
 UDP_Socket.bind((sender, 5555))
 
 if __name__ == "__main__":
     print("starting ",environ.get("hostname"))
 
-    set_raft_state("raft_leader")
+    #set_raft_state("raft_leader")
     
+    
+
     #Starting thread 1
     listen_thread = threading.Thread(target=listener, args=[UDP_Socket])
     listen_thread.start()

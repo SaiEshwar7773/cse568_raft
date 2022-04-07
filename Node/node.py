@@ -1,3 +1,4 @@
+from email import message
 import socket
 import time
 import threading
@@ -7,10 +8,13 @@ import traceback
 from os import environ 
 
 import time
+import random
 
 # Constants
-MAJORITY = 3
-STD_TIMEOUT = 1
+MAJORITY = len(environ.get("targets").split(","))//2 + 1
+STD_TIMEOUT = 0.15
+current_term_timeout = STD_TIMEOUT*random.uniform(2,3)
+
 
 
 # Initialize
@@ -57,10 +61,11 @@ def request_vote(skt):
 def set_leader_msg_all_nodes(skt):
     msg = {
         "type" : "AppendEntry",
-        "body":
-            {
-                "leader_name": environ.get("hostname")
-            }   
+        "term" : environ.get("term"),
+        "leaderId": environ.get("hostname"),
+        "entries" : ["leader_update"],
+        "prevLogIndex" : -1,
+        "prevLogTerm" : -1
         }
     msg_bytes = json.dumps(msg).encode('utf-8')
     for target in targets:
@@ -70,9 +75,11 @@ def set_leader_msg_all_nodes(skt):
 def send_heartbeat(skt):
     msg = {
         "type" : "AppendEntry",
-        "body":
-            {
-            }   
+        "term" : environ.get("term"),
+        "leaderId": environ.get("hostname"),
+        "entries" : [],
+        "prevLogIndex" : -1,
+        "prevLogTerm" : -1
         }
     msg_bytes = json.dumps(msg).encode('utf-8')
     while True:
@@ -103,18 +110,18 @@ def listener(skt):
 # Listener  -- Universal Process Message 
 def process_msg(msg, skt):
     message_type = msg["type"]
-    message_body = msg["body"]
     if message_type == "AppendEntry":#Message from Leader -- valid for follower
-        if "leader_name" in message_body:
-            set_raft_leader(message_body["leader_name"])
-        if  not message_body:
+        message_entries = msg["entries"]
+        if message_entries:
+                set_raft_leader(msg["leaderId"])
+        elif  not msg["entries"]:
             receive_heartbeat()
     if message_type == "RequestVote":
-        if "candidate_name" in message_body:
-            cast_vote(skt, message_body["candidate_name"], message_body["term"])
+        if "candidate_name" in msg['body']:
+            cast_vote(skt, msg['body']["candidate_name"], msg['body']["term"])
     if message_type == "CastVote":
-        if "sender_name" in message_body:
-            receive_vote(skt, message_body["sender_name"])
+        if "sender_name" in msg['body']:
+            receive_vote(skt, msg['body']["sender_name"])
  
     
 # Listen --- Candidate ---- Receive vote
@@ -142,11 +149,14 @@ def cast_vote(skt,target,term):
             "body":
                 {
                     "sender_name": environ.get("hostname")
-                }   
+                }
             }
         msg_bytes = json.dumps(msg).encode('utf-8')
         skt.sendto(msg_bytes, (target, 5555))
         environ['votedFor'] = target
+        #Update the timeout for this term
+        global current_term_timeout
+        current_term_timeout = STD_TIMEOUT*random.uniform(2,3)
         environ['term'] = str(term)
 
 #Listen -- follower
@@ -157,10 +167,9 @@ def set_raft_leader(raft_leader):
 
 def lookout_for_heartbeats():
     global heartbeat_timer
-    
     while True:
         curr_time = time.time()
-        if (curr_time - heartbeat_timer > 3*STD_TIMEOUT):
+        if (curr_time - heartbeat_timer > current_term_timeout):
             set_raft_state("raft_candidate")
             break
         time.sleep(STD_TIMEOUT)
@@ -180,7 +189,6 @@ def set_raft_state(raft_state):
         notify_thread.join()
         heart_beat_thread = threading.Thread(target=send_heartbeat, args=[UDP_Socket])
         heart_beat_thread.start()
-        heart_beat_thread.join()
 
 
 # Creating Socket and binding it to the target container IP and port
