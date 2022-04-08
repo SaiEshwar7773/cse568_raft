@@ -11,24 +11,45 @@ services:
      build: Node/.
      environment: 
         hostname: "Node1"
-        targets: "Node2,Node3"
+        targets: "Node2,Node3,Node4,Node5"
         term: 0
+        votes_received: 0
 
    node2:
      container_name: Node2
      build: Node/.
      environment: 
         hostname: "Node2"
-        targets: "Node1,Node3"
+        targets: "Node1,Node3,Node4,Node5"
         term: 0
+        votes_received: 0
 
    node3:
        container_name: Node3
        build: Node/.
        environment: 
         hostname: "Node3"
-        targets: "Node2,Node1"
+        targets: "Node1,Node2,Node4,Node5"
         term: 0
+        votes_received: 0
+
+   node4:
+       container_name: Node4
+       build: Node/.
+       environment: 
+        hostname: "Node4"
+        targets: "Node1,Node2,Node3,Node5"
+        term: 0
+        votes_received: 0
+  
+   node5:
+       container_name: Node5
+       build: Node/.
+       environment: 
+        hostname: "Node5"
+        targets: "Node1,Node2,Node3,Node4"
+        term: 0
+        votes_received: 0
 
    #Do not change the part below
    controller:
@@ -38,7 +59,8 @@ services:
        environment:
          hostname: "Controller"
          term: 0
-         targets: "Node1,Node2,Node3"
+         targets: "Node1,Node2,Node3,Node4,Node5"
+         votes_received: 0
 
 
 

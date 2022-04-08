@@ -1,4 +1,5 @@
 from email import message
+from glob import glob
 import socket
 import time
 import threading
@@ -29,6 +30,7 @@ heartbeat_timer = time.time()
 # Initialize for Canditate
 votes_received = 0
 voting_completed = False
+vote_casted = {}
  
 state_info = {
     "current_term": 0,
@@ -38,6 +40,17 @@ state_info = {
     "heartbeat": STD_TIMEOUT
 }
 
+
+
+# # Send Message From Candidate -- Request Vote
+def seek_votes(skt):
+    global candidate_timer 
+    candidate_timer = time.time()
+    while environ["raft_state"]=="raft_candidate":
+        print(time.time(),"$$$$$$")
+        request_vote(skt)
+        print(voting_completed)
+        time.sleep(3*STD_TIMEOUT)
 
 # Send Message From Candidate -- Request Vote
 def request_vote(skt):
@@ -55,7 +68,7 @@ def request_vote(skt):
     msg_bytes = json.dumps(msg).encode('utf-8')
     for target in targets:
         try:
-            print(environ.get("hostname"), "requesting vote from", target)
+            print(environ.get("hostname"), "requesting vote from", target, "Term ", environ.get("term"))
             skt.sendto(msg_bytes, (target, 5555))
         except Exception as e:
             pass
@@ -120,9 +133,15 @@ def listener(skt):
 
 # Listener  -- Universal Process Message 
 def process_msg(msg, skt):
+    global vote_casted
+    global heartbeat_timer
     message_type = msg["type"]
     if message_type == "AppendEntry":#Message from Leader -- valid for follower
         message_entries = msg["entries"]
+        if msg["term"]>environ.get("term"):
+            heartbeat_timer = time.time()
+            environ["term"] = str(msg["term"])
+            set_raft_state("raft_follower")
         if message_entries:
                 set_raft_leader(msg["leaderId"])
         elif  not msg["entries"]:
@@ -130,19 +149,18 @@ def process_msg(msg, skt):
     if message_type == "RequestVoteRPC":
         if "candidate_id" in msg:
             cast_vote(skt, msg["candidate_id"], int(msg["term"]))
-    if message_type == "ResponseVoteRPC":
+    if message_type == "ResponseVoteRPC": 
         if "follower_id" in msg:
-            receive_vote(skt, msg["follower_id"])
+            receive_vote(skt, msg["follower_id"],msg['term'])
  
     
 # Listen --- Candidate ---- Receive vote
-def receive_vote(skt,voter):
+def receive_vote(skt,voter,term):
     global votes_received
-    global voting_completed 
-    print(voting_completed)
-    if not voting_completed:
+    global voting_completed
+    if not voting_completed and term == int(environ.get("term")):
         votes_received += 1
-        print(environ.get("hostname"),"Recieved vote from", voter, ". The Vote count is now ", votes_received)
+        print(environ.get("hostname"),"Recieved vote from", voter, "in term ",environ.get("term"),". The Vote count is now ", votes_received)
         if votes_received >= MAJORITY: 
             voting_completed = True
             set_raft_state("raft_leader")
@@ -155,10 +173,14 @@ def receive_heartbeat():
 
 # Listen --- Follower --- Cast vote
 def cast_vote(skt,target,term):
-    if term>int(environ.get("term")):
+    global vote_casted
+    global heartbeat_timer 
+    heartbeat_timer = time.time()
+    print("cast_vote -- 3rd line", vote_casted, term , int(environ.get("term")))
+    if term>int(environ.get("term")) and (term not in vote_casted) :
         msg = {
             "type" : "ResponseVoteRPC",
-            "term" : environ.get("term"),
+            "term" : term,
             "follower_id": environ.get("hostname"),
             "prevLogIndex" : -1,
             "prevLogTerm" : -1
@@ -166,10 +188,11 @@ def cast_vote(skt,target,term):
         msg_bytes = json.dumps(msg).encode('utf-8')
         skt.sendto(msg_bytes, (target, 5555))
         environ['votedFor'] = target
+        vote_casted[term] = target
         #Update the timeout for this term
         global current_term_timeout
         current_term_timeout = STD_TIMEOUT*random.uniform(2,3)
-        environ['term'] = str(term)
+        
 
 #Listen -- follower
 def set_raft_leader(raft_leader):
@@ -179,11 +202,14 @@ def set_raft_leader(raft_leader):
 
 def lookout_for_heartbeats():
     global heartbeat_timer
+    global curr_time
+    global vote_casted
     while True:
-        curr_time = time.time()
-        if (curr_time - heartbeat_timer > current_term_timeout):
-            set_raft_state("raft_candidate")
-            break
+        curr_time = time.time() 
+        if (curr_time - heartbeat_timer > current_term_timeout) : 
+            if int(environ.get("term"))+1 not in vote_casted:
+                set_raft_state("raft_candidate")
+                break
         time.sleep(STD_TIMEOUT)
 
 
@@ -194,7 +220,7 @@ def set_raft_state(raft_state):
     if raft_state == "raft_follower":
         threading.Thread(target=lookout_for_heartbeats, args=[]).start()
     if raft_state == "raft_candidate":
-        threading.Thread(target=request_vote, args=[UDP_Socket]).start()
+        threading.Thread(target=seek_votes, args=[UDP_Socket]).start()
     if raft_state == "raft_leader":
         notify_thread = threading.Thread(target=set_leader_msg_all_nodes, args=[UDP_Socket])
         notify_thread.start()

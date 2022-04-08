@@ -23,7 +23,8 @@ heartbeat_timer = time.time()
 # Initialize for Canditate
 votes_received = 0
 voting_completed = False
- 
+vote_casted = {}
+
 state_info = {
     "current_term": 0,
     "voted_for": None,
@@ -31,6 +32,15 @@ state_info = {
     "timeout": STD_TIMEOUT,
     "heartbeat": STD_TIMEOUT
 }
+
+# # Send Message From Candidate -- Request Vote
+def seek_votes(skt):
+    global candidate_timer 
+    candidate_timer = time.time()
+    while environ["raft_state"]=="raft_candidate":
+        request_vote(skt)
+        time.sleep(2*STD_TIMEOUT)
+
 
 
 # Send Message From Candidate -- Request Vote
@@ -105,6 +115,7 @@ def process_msg(msg, skt):
     message_type = msg["type"]
     message_body = msg["body"]
     if message_type == "AppendEntry":#Message from Leader -- valid for follower
+        
         if "leader_name" in message_body:
             set_raft_leader(message_body["leader_name"])
         if  not message_body:
@@ -147,6 +158,7 @@ def cast_vote(skt,target,term):
         msg_bytes = json.dumps(msg).encode('utf-8')
         skt.sendto(msg_bytes, (target, 5555))
         environ['votedFor'] = target
+        vote_casted[term] = target
         environ['term'] = str(term)
 
 #Listen -- follower
@@ -161,7 +173,8 @@ def lookout_for_heartbeats():
     while True:
         curr_time = time.time()
         if (curr_time - heartbeat_timer > 3*STD_TIMEOUT):
-            set_raft_state("raft_candidate")
+            if int(environ.get("term"))+1 not in vote_casted:
+                set_raft_state("raft_candidate")
             break
         time.sleep(STD_TIMEOUT)
 
@@ -173,7 +186,7 @@ def set_raft_state(raft_state):
     if raft_state == "raft_follower":
         threading.Thread(target=lookout_for_heartbeats, args=[]).start()
     if raft_state == "raft_candidate":
-        threading.Thread(target=request_vote, args=[UDP_Socket]).start()
+        threading.Thread(target=seek_votes, args=[UDP_Socket]).start()
     if raft_state == "raft_leader":
         notify_thread = threading.Thread(target=set_leader_msg_all_nodes, args=[UDP_Socket])
         notify_thread.start()
