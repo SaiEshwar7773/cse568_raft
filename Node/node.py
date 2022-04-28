@@ -83,7 +83,7 @@ def reset_heartbeat_timer(location):
 
 def timeout():
     if (time.time() - heartbeat_timer > current_term_timeout):
-        # custom_print(time.time() - heartbeat_timer, "check_timout")
+        custom_print(time.time() - heartbeat_timer, "check_timeout")
         return True
     return False
     
@@ -106,14 +106,14 @@ def request_vote(skt):
     msg_bytes = json.dumps(msg).encode('utf-8')
     for target in targets:
         try:
-            threading.Thread(target=get_each_vote, args=[skt, target, msg_bytes]).start()
+            skt.sendto(msg_bytes, (target, 5555))
             custom_print(environ.get("hostname"), "requesting vote from", target, "Term ", environ.get("term"))
             # skt.sendto(msg_bytes, (target, 5555))
         except Exception as e:
             pass
 
-def get_each_vote(skt, target, msg_bytes):
-    skt.sendto(msg_bytes, (target, 5555))
+
+    
 
 # Send Leader INFO --- Contoller Funtion
 def send_leader_info(skt):
@@ -194,6 +194,7 @@ def send_heartbeat(skt):
             pending_entries_queue.pop(0)
         commit_votes_count = 0
     while environ.get("raft_state") == "raft_leader":
+        print(" targets::", targets)
         for target in targets:
             msg["leaderCommit"] = commit_index
             msg["prevLogIndex"] = next_index_dict[target] - 1 
@@ -208,7 +209,11 @@ def send_heartbeat(skt):
                     msg["entries"] = [pending_entries_queue[0]]#dequeue will happen if the majority votes 
                     commit_votes_count = 1 #includes leader itself
             msg_bytes = json.dumps(msg).encode('utf-8')
-            skt.sendto(msg_bytes, (target, 5555))
+            try:
+                skt.sendto(msg_bytes, (target, 5555))
+            except Exception as e:
+                # print("node probably delted",  e, target)
+                pass
         time.sleep(STD_TIMEOUT)
 
 
@@ -245,8 +250,8 @@ def process_msg(msg, skt):
         if msg["term"]>environ.get("term"):#failing leader
             set_raft_state("raft_follower")
         if msg["leaderId"] != environ.get("raft_leader"):
-            set_raft_leader(msg["leaderId"])
-        # custom_print("receive heartbeat")
+            set_raft_leader(msg["leaderId"], msg["term"])
+        custom_print("receive heartbeat")
         # if environ.get("raft_state")!="raft_leader":
         reset_heartbeat_timer("process_msg")
     if message_type == "RequestVoteRPC":
@@ -353,8 +358,9 @@ def cast_vote(skt,target,term):
         
 
 #Listen -- follower
-def set_raft_leader(raft_leader):
+def set_raft_leader(raft_leader, term):
     environ['raft_leader'] = raft_leader
+    environ['term'] = term
     custom_print(environ.get("hostname") ," set leader to: " , environ.get("raft_leader"))
 
 
@@ -364,7 +370,8 @@ def lookout_for_heartbeats():
     global vote_casted
     while environ.get("raft_state") == "raft_follower": 
         if timeout() : 
-            if int(environ.get("term"))+1 not in vote_casted:
+            print("vote_casted::: ", vote_casted, "next_term::", int(environ.get("term"))+1)
+            if int(environ.get("term"))+1 not in vote_casted: 
                 set_raft_state("raft_candidate")
                 break
         time.sleep(STD_TIMEOUT)
