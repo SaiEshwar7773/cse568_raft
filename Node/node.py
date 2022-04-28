@@ -8,6 +8,7 @@ import json
 import traceback
 
 from os import environ 
+from os.path import exists
 
 import time
 import random
@@ -16,13 +17,32 @@ import random
 
 # Constants
 MAJORITY = len(environ.get("targets").split(","))//2 + 1
-STD_TIMEOUT = 0.15
+STD_TIMEOUT =  1.5
 current_term_timeout = STD_TIMEOUT*random.uniform(2,3)
+FILE_NAME = "./logs.json"
+ 
+if not exists(FILE_NAME):
+# Empty File      
+    with open(FILE_NAME, "w") as file:
+        empty = []
+        json.dump(empty, file) 
+
+#Constants for Leaders --- Log Replication
+next_index_dict = {}
+match_index_dict = {}
+pending_entries_queue = []
+commit_votes_count = 0
+
+
+
+
+# Phase 4 --- Volatile State
+commit_index = 0    # Both for follower and leader
+last_applied = 0    # Unused for now
 
 
 
 # Initialize
-sender = "Controller"
 targets = environ.get("targets").split(",")
 port = 5555
 heartbeat_timer = time.time()
@@ -44,7 +64,7 @@ state_info = {
 
 def custom_print(*x):
     global extra_logs
-    if extra_logs:
+    if extra_logs :
         print(*x)
 
 # # Send Message From Candidate -- Request Vote
@@ -53,8 +73,20 @@ def seek_votes(skt):
     candidate_timer = time.time()
     while environ["raft_state"]=="raft_candidate":
         request_vote(skt)
-        custom_print(voting_completed)
+        # custom_print(voting_completed)
         time.sleep(STD_TIMEOUT*random.uniform(2,3))
+
+def reset_heartbeat_timer(location):
+    global heartbeat_timer
+    # custom_print(time.time()-heartbeat_timer,location)
+    heartbeat_timer = time.time()
+
+def timeout():
+    if (time.time() - heartbeat_timer > current_term_timeout):
+        # custom_print(time.time() - heartbeat_timer, "check_timout")
+        return True
+    return False
+    
 
 # Send Message From Candidate -- Request Vote
 def request_vote(skt):
@@ -63,6 +95,8 @@ def request_vote(skt):
     global voting_completed 
     voting_completed = False
     environ["term"] = str(int(environ.get("term")) + 1)
+    reset_heartbeat_timer("request_vote")
+    custom_print(environ.get("hostname") ," candidate, seeking votes for term: " , environ.get("term"))
     msg = {
             "request" : "RequestVoteRPC",
             "term" : environ.get("term"),
@@ -72,13 +106,21 @@ def request_vote(skt):
     msg_bytes = json.dumps(msg).encode('utf-8')
     for target in targets:
         try:
+            threading.Thread(target=get_each_vote, args=[skt, target, msg_bytes]).start()
             custom_print(environ.get("hostname"), "requesting vote from", target, "Term ", environ.get("term"))
-            skt.sendto(msg_bytes, (target, 5555))
+            # skt.sendto(msg_bytes, (target, 5555))
         except Exception as e:
             pass
 
+def get_each_vote(skt, target, msg_bytes):
+    skt.sendto(msg_bytes, (target, 5555))
+
 # Send Leader INFO --- Contoller Funtion
-def send_leader_info(msg, skt):
+def send_leader_info(skt):
+    msg = {}
+    msg["sender_name"] = environ.get("hostname")
+    msg["term"] = environ.get("term")
+    msg["request"] = "LEADER_INFO"
     msg["key"] = "LEADER"
     msg["value"] = environ.get("raft_leader")
     msg_bytes = json.dumps(msg).encode('utf-8')
@@ -97,47 +139,99 @@ def set_leader_msg_all_nodes(skt):
             "prevLogTerm" : -1
         }
     msg_bytes = json.dumps(msg).encode('utf-8')
+    global next_index_dict
+    global match_index_dict
+    next_index_dict = {}
+    match_index_dict = {}
+    for target in targets:
+            next_index_dict[target] = commit_index + 1
+            match_index_dict[target] = 0 
     for target in targets:
         try:
             skt.sendto(msg_bytes, (target, 5555))
         except:
             pass
 
+def get_prev_log_term():
+    with open(FILE_NAME, "r") as file:
+        logs = json.load(file)
+        if len(logs)>0:
+            return logs[-1]["term"]
+        else:
+            return 0
+        
+
+def save_logs(entry,next_index):
+    log = {}
+    log["Entry"] = entry
+    log["term"] = environ.get("term")
+    with open(FILE_NAME, "r") as file:
+        logs = json.load(file)
+    with open( FILE_NAME , "w") as file:
+        if next_index<len(logs):
+            #if no of logs are greater than the next index we have to place the new log into the next index and delete the following logs
+            #Receive implementation case 3
+            logs=logs[:next_index]
+        logs.append(log)
+        json.dump(logs, file)
+    commit_index = next_index
+
 # Send heartbeats From --- Leader --- to followers
 def send_heartbeat(skt):
+    reset_heartbeat_timer("send_heartbeat")
+    global commit_votes_count
     msg = {
         "request" : "AppendEntry",
-        "term" : environ.get("term"),
-        "leaderId": environ.get("hostname"),
-        "entries" : [],
-        "prevLogIndex" : -1,
-        "prevLogTerm" : -1
+        "term" : environ.get("term"), # leaders's term
+        "leaderId": environ.get("hostname"), # leaders's id
+        "entries" : []
         }
-    msg_bytes = json.dumps(msg).encode('utf-8')
+    if commit_votes_count> 0: # log replication happened in last heartbeat
+        if commit_votes_count >= MAJORITY:
+            save_logs(pending_entries_queue.pop(0))
+            next_index_dict[msg["target"]] += 1
+        else:
+            pending_entries_queue.pop(0)
+        commit_votes_count = 0
     while environ.get("raft_state") == "raft_leader":
         for target in targets:
-            try:
-                skt.sendto(msg_bytes, (target, 5555))
-            except:
-                pass
+            msg["leaderCommit"] = commit_index
+            msg["prevLogIndex"] = next_index_dict[target] - 1 
+            msg["prevLogTerm"] = get_prev_log_term()
+            eetime = time.time()
+            if next_index_dict[target] <= commit_index:
+                with open(FILE_NAME, "r") as file:
+                    logs = json.load(file)
+                msg["entries"] = [logs[next_index_dict[target]]]
+            else:
+                if pending_entries_queue:
+                    msg["entries"] = [pending_entries_queue[0]]#dequeue will happen if the majority votes 
+                    commit_votes_count = 1 #includes leader itself
+            msg_bytes = json.dumps(msg).encode('utf-8')
+            skt.sendto(msg_bytes, (target, 5555))
         time.sleep(STD_TIMEOUT)
 
 
 
 # Listener -- Universal
 def listener(skt):
-    custom_print(f"Starting Listener")
-    while environ.get("raft_state")!="raft_shutdown":
-        try:
-            msg, addr = skt.recvfrom(1024)
-        except:
-            custom_print(f"ERROR while fetching from socket : {traceback.print_exc()}")
+    # custom_print(f"Starting Listener")
+    while True:
+        if environ.get("raft_state")!="raft_shutdown":
+            try:
+                msg, addr = skt.recvfrom(1024)
+            except:
+                custom_print(f"ERROR while fetching from socket : {traceback.print_exc()}")
 
-        # Decoding the Message received from Node 1
-        decoded_msg = json.loads(msg.decode('utf-8'))
-        # custom_print(f"Message Received : {decoded_msg} From : {addr}")
+            # Decoding the Message received from Node 1
+            decoded_msg = json.loads(msg.decode('utf-8'))
+            # custom_print(f"Message Received : {decoded_msg} From : {addr}")
 
-        process_msg(decoded_msg, skt)
+            process_msg(decoded_msg, skt)
+        
+        #When controller sends msg "convert follower" listern should able to convert the node state to follower 
+        if decoded_msg["request"] == "CONVERT_FOLLOWER":
+            process_msg(decoded_msg, skt)
     custom_print("Exiting Listener Function")
 
 
@@ -145,26 +239,27 @@ def listener(skt):
 # Listener  -- Universal Process Message 
 def process_msg(msg, skt):
     global vote_casted
-    global heartbeat_timer
     message_type = msg["request"]
     if message_type == "AppendEntry":#Message from Leader -- valid for follower
         message_entries = msg["entries"]
-        if msg["term"]>environ.get("term"):
-            heartbeat_timer = time.time()
-            environ["term"] = str(msg["term"])
+        if msg["term"]>environ.get("term"):#failing leader
             set_raft_state("raft_follower")
-        if message_entries:
-                set_raft_leader(msg["leaderId"])
-        elif  not msg["entries"]:
-            receive_heartbeat()
+        if msg["leaderId"] != environ.get("raft_leader"):
+            set_raft_leader(msg["leaderId"])
+        # custom_print("receive heartbeat")
+        # if environ.get("raft_state")!="raft_leader":
+        reset_heartbeat_timer("process_msg")
     if message_type == "RequestVoteRPC":
         if "candidate_id" in msg:
             cast_vote(skt, msg["candidate_id"], int(msg["term"]))
     if message_type == "ResponseVoteRPC": 
         if "follower_id" in msg:
             receive_vote(skt, msg["follower_id"],msg['term'])
+    if message_type == "ResponseEntryRPC": 
+        if msg["success"]:
+            commit_votes_count += 1
     if message_type == "LEADER_INFO": 
-        # send_leader_info(msg, skt)
+        # send_leader_info(msg, skt) -- no need to respond to the controller -- we are just printing in the console
         msg["key"] = "LEADER"
         msg["value"] = environ.get("raft_leader")
         print(msg)
@@ -177,7 +272,12 @@ def process_msg(msg, skt):
             print("Controller converted ",environ.get("hostname"), " to Candidate.")
     if message_type == "SHUTDOWN":
         set_raft_state("raft_shutdown")
-
+    if message_type == "STORE":
+        if environ.get("raft_state") == "raft_leader":
+            global pending_entries_queue
+            pending_entries_queue.append(msg["entry"])
+        else:
+            send_leader_info(skt)
 
 # Listen --- Candidate ---- Receive vote
 def receive_vote(skt,voter,term):
@@ -191,18 +291,50 @@ def receive_vote(skt,voter,term):
             set_raft_state("raft_leader")
 
 # Listen --- Follower --- Heartbeat
-def receive_heartbeat():
-    global heartbeat_timer
+def receive_heartbeat(skt, msg):
+    
     # custom_print( "Heartbeat received from: " , environ.get("raft_leader")," at ",environ.get("hostname"))
-    heartbeat_timer = time.time()
+
+    with open(FILE_NAME, "r") as file:
+        logs = json.load(file)
+    commit_index = len(logs)
+    invalid_term = environ.get("term") > msg["term"]
+    print("logs", logs)
+    if len(logs)>0:
+        prev_log_term_local = logs[-1]["term"]
+    else:
+        prev_log_term_local = -1
+    invalid_prev = prev_log_term_local != msg["prevLogTerm"] or len(logs)-1 == msg["prevLogIndex"]
+    if invalid_prev or invalid_term:
+        msg = {
+            "request" : "ResponseEntryRPC",
+            "term" : environ.get("term"),
+            "success" : False,
+            "target" : environ.get("hostname")
+            }
+        msg_bytes = json.dumps(msg).encode('utf-8')
+        skt.sendto(msg_bytes, (environ.get("raft_leader"), 5555))
+    else:
+        msg = {
+            "request" : "ResponseEntryRPC",
+            "term" : environ.get("term"),
+            "success" : True,
+            "target" : environ.get("hostname")
+            }
+        msg_bytes = json.dumps(msg).encode('utf-8')
+        skt.sendto(msg_bytes, (environ.get("raft_leader"), 5555))
+        save_logs(msg["entry"],msg["prevLogIndex"]+1)
+    reset_heartbeat_timer("receive_heartbeat")
+        
+
+    
 
 # Listen --- Follower --- Cast vote
 def cast_vote(skt,target,term):
     global vote_casted
-    global heartbeat_timer 
-    heartbeat_timer = time.time()
-    custom_print("cast_vote -- 3rd line", vote_casted, term , int(environ.get("term")))
+    reset_heartbeat_timer("cast_vote")
     if term>int(environ.get("term")) and (term not in vote_casted) :
+        custom_print(environ.get("hostname"),"casting vote to,", target ,"for term" , term ,". Its current term is ", environ.get("term"))
         msg = {
             "request" : "ResponseVoteRPC",
             "term" : term,
@@ -213,6 +345,7 @@ def cast_vote(skt,target,term):
         msg_bytes = json.dumps(msg).encode('utf-8')
         skt.sendto(msg_bytes, (target, 5555))
         environ['votedFor'] = target
+        # environ["term"] = str(int(environ.get("term")) + 1)
         vote_casted[term] = target
         #Update the timeout for this term
         global current_term_timeout
@@ -229,9 +362,8 @@ def lookout_for_heartbeats():
     global heartbeat_timer
     global curr_time
     global vote_casted
-    while environ.get("raft_state") == "raft_follower":
-        curr_time = time.time() 
-        if (curr_time - heartbeat_timer > current_term_timeout) : 
+    while environ.get("raft_state") == "raft_follower": 
+        if timeout() : 
             if int(environ.get("term"))+1 not in vote_casted:
                 set_raft_state("raft_candidate")
                 break
@@ -240,8 +372,12 @@ def lookout_for_heartbeats():
 
 #Listen -- Universal
 def set_raft_state(raft_state):
+    global commit_index
+    with open(FILE_NAME, "r") as file:
+        logs = json.load(file)
+        commit_index = len(logs)
     environ['raft_state'] = raft_state
-    custom_print(environ.get("hostname") ," set to raft state: " , environ.get("raft_state"))
+    # custom_print(environ.get("hostname") ," set to raft state: " , environ.get("raft_state"))
     if raft_state == "raft_follower":
         threading.Thread(target=lookout_for_heartbeats, args=[]).start()
     if raft_state == "raft_candidate":
