@@ -4,7 +4,9 @@ import traceback
 import time
 import threading
 # Wait following seconds below sending the controller request
-time.sleep(10)
+
+from os import environ
+time.sleep(5)
 
 # Read Message Template
 msg = json.load(open("Message.json"))
@@ -13,6 +15,7 @@ msg = json.load(open("Message.json"))
 sender = "Controller"
 target = "Node1"
 port = 5555
+extra_logs = True
 
 # Request
 msg['sender_name'] = sender
@@ -20,13 +23,32 @@ msg['sender_name'] = sender
 
 # msg['request'] = "LEADER_INFO"
 # msg['request'] = "CONVERT_FOLLOWER"
-msg['request'] = "SHUTDOWN"
+# msg['request'] = "SHUTDOWN"
 # msg['request'] = "TIMEOUT"
+msg['request'] = "STORE"
 
+entry = { 
+            "id": 4, 
+            "score": 3901
+        } 
+msg['entry'] = entry
 
 print(f"Request Created : {msg}")
 
 
+def custom_print(*x):
+    global extra_logs
+    if extra_logs:
+        print(*x)
+
+def set_raft_leader(raft_leader):
+    environ['raft_leader'] = raft_leader
+    custom_print(environ.get("hostname") ," set leader to: " , environ.get("raft_leader"))
+
+def process_msg(response_msg, skt):
+    if response_msg["key"] == "LEADER":
+        set_raft_leader(response_msg["value"])
+        skt.sendto(json.dumps(request_msg).encode('utf-8'), (environ.get("raft_leader"), port))    
 
 
 # Listener -- Controller
@@ -43,7 +65,7 @@ def listener(skt):
         # print(f"Message Received : {decoded_msg} From : {addr}")
 
         print(decoded_msg)
-        time.sleep(10)
+        process_msg(decoded_msg, skt)
     print("Exiting Listener Function")
 
 # Socket Creation and Binding
@@ -53,11 +75,13 @@ skt.bind((sender, port))
 # Send Message
 try:
     # Encoding and sending the message
-    skt.sendto(json.dumps(msg).encode('utf-8'), (target, port))
+    global request_msg
+    request_msg = msg
+    skt.sendto(json.dumps(request_msg).encode('utf-8'), (target, port))
     
     # Calling Listener
-    #listen_thread = threading.Thread(target=listener, args=[skt])
-    #listen_thread.start()
+    listen_thread = threading.Thread(target=listener, args=[skt])
+    listen_thread.start()
 
 except:
     #  socket.gaierror: [Errno -3] would be thrown if target IP container does not exist or exits, write your listener
