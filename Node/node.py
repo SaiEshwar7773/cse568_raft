@@ -46,7 +46,7 @@ last_applied = 0    # Unused for now
 targets = environ.get("targets").split(",")
 port = 5555
 heartbeat_timer = time.time()
-extra_logs = True
+extra_logs = False
 
 
 # Initialize for Canditate
@@ -186,15 +186,16 @@ def send_heartbeat(skt):
         "leaderId": environ.get("hostname"), # leaders's id
         "entries" : []
         }
-    if commit_votes_count> 0: # log replication happened in last heartbeat
-        if commit_votes_count >= MAJORITY:
-            save_logs(pending_entries_queue.pop(0))
-            next_index_dict[msg["target"]] += 1
-        else:
-            pending_entries_queue.pop(0)
-        commit_votes_count = 0
     while environ.get("raft_state") == "raft_leader":
-        print(" targets::", targets)
+        print("commit_votes_count::",commit_votes_count)
+        if commit_votes_count> 0: # log replication happened in last heartbeat
+            if commit_votes_count >= MAJORITY:
+                save_logs(pending_entries_queue.pop(0))
+                next_index_dict[msg["target"]] += 1
+            else:
+                pending_entries_queue.pop(0)
+            commit_votes_count = 0
+        custom_print(" targets::", targets)
         for target in targets:
             msg["leaderCommit"] = commit_index
             msg["prevLogIndex"] = next_index_dict[target] - 1 
@@ -204,10 +205,13 @@ def send_heartbeat(skt):
                 with open(FILE_NAME, "r") as file:
                     logs = json.load(file)
                 msg["entries"] = [logs[next_index_dict[target]]]
+                # print(target, "send_heartbeat", "if case", commit_index, next_index_dict)
             else:
                 if pending_entries_queue:
                     msg["entries"] = [pending_entries_queue[0]]#dequeue will happen if the majority votes 
                     commit_votes_count = 1 #includes leader itself
+                # print(target, "send_heartbeat", "else case" , commit_index, next_index_dict)
+            # print(msg["entries"])
             msg_bytes = json.dumps(msg).encode('utf-8')
             try:
                 skt.sendto(msg_bytes, (target, 5555))
@@ -245,6 +249,7 @@ def listener(skt):
 def process_msg(msg, skt):
     global vote_casted
     message_type = msg["request"]
+    # print("Phase4")
     if message_type == "AppendEntry":#Message from Leader -- valid for follower
         message_entries = msg["entries"]
         if msg["term"]>environ.get("term"):#failing leader
@@ -253,7 +258,10 @@ def process_msg(msg, skt):
             set_raft_leader(msg["leaderId"], msg["term"])
         custom_print("receive heartbeat")
         # if environ.get("raft_state")!="raft_leader":
+        if msg["entries"]:
+            print("entries(proces_message):: ", msg["entries"], environ["raft_state"])
         reset_heartbeat_timer("process_msg")
+        receive_heartbeat(skt, msg)
     if message_type == "RequestVoteRPC":
         if "candidate_id" in msg:
             cast_vote(skt, msg["candidate_id"], int(msg["term"]))
@@ -264,17 +272,17 @@ def process_msg(msg, skt):
         if msg["success"]:
             commit_votes_count += 1
     if message_type == "LEADER_INFO": 
-        # send_leader_info(msg, skt) -- no need to respond to the controller -- we are just printing in the console
+        send_leader_info(skt) # no need to respond to the controller -- we are just printing in the console
         msg["key"] = "LEADER"
         msg["value"] = environ.get("raft_leader")
-        print(msg)
+        custom_print(msg)
     if message_type == "CONVERT_FOLLOWER": 
         set_raft_state("raft_follower")
-        print("Controller converted ",environ.get("hostname"), " to follower.")
+        custom_print("Controller converted ",environ.get("hostname"), " to follower.")
     if message_type == "TIMEOUT":
         if environ.get("raft_state") == "raft_follower":
             set_raft_state("raft_candidate")
-            print("Controller converted ",environ.get("hostname"), " to Candidate.")
+            custom_print("Controller converted ",environ.get("hostname"), " to Candidate.")
     if message_type == "SHUTDOWN":
         set_raft_state("raft_shutdown")
     if message_type == "STORE":
@@ -283,6 +291,7 @@ def process_msg(msg, skt):
             pending_entries_queue.append(msg["entry"])
         else:
             send_leader_info(skt)
+            # print("Phase4::::::::")
 
 # Listen --- Candidate ---- Receive vote
 def receive_vote(skt,voter,term):
@@ -297,19 +306,22 @@ def receive_vote(skt,voter,term):
 
 # Listen --- Follower --- Heartbeat
 def receive_heartbeat(skt, msg):
-    
     # custom_print( "Heartbeat received from: " , environ.get("raft_leader")," at ",environ.get("hostname"))
-
     with open(FILE_NAME, "r") as file:
         logs = json.load(file)
     commit_index = len(logs)
+    print("In receive heartbeat ", msg)
+    print("In receive heartbeat, commit_index", commit_index)
     invalid_term = environ.get("term") > msg["term"]
-    print("logs", logs)
+    custom_print("logs", logs)
     if len(logs)>0:
         prev_log_term_local = logs[-1]["term"]
     else:
         prev_log_term_local = -1
-    invalid_prev = prev_log_term_local != msg["prevLogTerm"] or len(logs)-1 == msg["prevLogIndex"]
+
+    print( prev_log_term_local , msg["prevLogTerm"] , len(logs) , msg["prevLogIndex"])
+    invalid_prev = prev_log_term_local != msg["prevLogTerm"] or len(logs)-1 != msg["prevLogIndex"]
+    print("invalid_prev",invalid_prev , "invalid_term",invalid_term)
     if invalid_prev or invalid_term:
         msg = {
             "request" : "ResponseEntryRPC",
@@ -318,8 +330,10 @@ def receive_heartbeat(skt, msg):
             "target" : environ.get("hostname")
             }
         msg_bytes = json.dumps(msg).encode('utf-8')
+        print("Receive heartbeat", "if case")
         skt.sendto(msg_bytes, (environ.get("raft_leader"), 5555))
     else:
+        print("Receive heartbeat", "else case")
         msg = {
             "request" : "ResponseEntryRPC",
             "term" : environ.get("term"),
@@ -328,8 +342,8 @@ def receive_heartbeat(skt, msg):
             }
         msg_bytes = json.dumps(msg).encode('utf-8')
         skt.sendto(msg_bytes, (environ.get("raft_leader"), 5555))
-        save_logs(msg["entry"],msg["prevLogIndex"]+1)
-    reset_heartbeat_timer("receive_heartbeat")
+        # save_logs(msg["entry"],msg["prevLogIndex"]+1) 
+    print("logs(receive_heartbeat):: ", logs)
         
 
     
@@ -370,7 +384,7 @@ def lookout_for_heartbeats():
     global vote_casted
     while environ.get("raft_state") == "raft_follower": 
         if timeout() : 
-            print("vote_casted::: ", vote_casted, "next_term::", int(environ.get("term"))+1)
+            custom_print("vote_casted::: ", vote_casted, "next_term::", int(environ.get("term"))+1)
             if int(environ.get("term"))+1 not in vote_casted: 
                 set_raft_state("raft_candidate")
                 break

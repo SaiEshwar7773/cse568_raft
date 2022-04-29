@@ -21,11 +21,11 @@ extra_logs = True
 msg['sender_name'] = sender
 
 
-# msg['request'] = "LEADER_INFO"
+msg['request'] = "LEADER_INFO"
 # msg['request'] = "CONVERT_FOLLOWER"
 # msg['request'] = "SHUTDOWN"
 # msg['request'] = "TIMEOUT"
-msg['request'] = "STORE"
+# msg['request'] = "STORE"
 
 entry = { 
             "id": 4, 
@@ -43,12 +43,11 @@ def custom_print(*x):
 
 def set_raft_leader(raft_leader):
     environ['raft_leader'] = raft_leader
-    custom_print(environ.get("hostname") ," set leader to: " , environ.get("raft_leader"))
+    custom_print(environ.get("hostname") ," set leader info at controller to: " , environ.get("raft_leader"))
 
 def process_msg(response_msg, skt):
     if response_msg["key"] == "LEADER":
-        set_raft_leader(response_msg["value"])
-        skt.sendto(json.dumps(request_msg).encode('utf-8'), (environ.get("raft_leader"), port))    
+        set_raft_leader(response_msg["value"])  
 
 
 # Listener -- Controller
@@ -56,16 +55,17 @@ def listener(skt):
     print(f"Starting Listener")
     while True:
         try:
-            msg, addr = skt.recvfrom(1024)
+            response_msg, addr = skt.recvfrom(1024)
         except:
             print(f"ERROR while fetching from socket : {traceback.print_exc()}")
 
         # Decoding the Message received from Node 1
-        decoded_msg = json.loads(msg.decode('utf-8'))
-        # print(f"Message Received : {decoded_msg} From : {addr}")
+        decoded_msg = json.loads(response_msg.decode('utf-8'))
+        print(f"Message Received : {decoded_msg} From : {addr}")
 
         print(decoded_msg)
-        process_msg(decoded_msg, skt)
+        process_msg(decoded_msg, skt) 
+        
     print("Exiting Listener Function")
 
 # Socket Creation and Binding
@@ -77,11 +77,18 @@ try:
     # Encoding and sending the message
     global request_msg
     request_msg = msg
-    # skt.sendto(json.dumps(request_msg).encode('utf-8'), (target, port))
+    skt.sendto(json.dumps(request_msg).encode('utf-8'), (target, port))
+    
     
     # Calling Listener
     listen_thread = threading.Thread(target=listener, args=[skt])
     listen_thread.start()
+
+    time.sleep(5)
+    msg['request'] = "STORE"
+    target = environ.get("raft_leader")
+    print(f"Controller :sending store request", msg, target)
+    skt.sendto(json.dumps(request_msg).encode('utf-8'), (environ.get("raft_leader"), port))
 
 except:
     #  socket.gaierror: [Errno -3] would be thrown if target IP container does not exist or exits, write your listener
