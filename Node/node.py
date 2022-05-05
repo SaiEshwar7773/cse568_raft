@@ -180,6 +180,7 @@ def save_logs(entry,next_index):
 def send_heartbeat(skt):
     reset_heartbeat_timer("send_heartbeat")
     global commit_votes_count
+    global pending_entries_queue
     msg = {
         "request" : "AppendEntry",
         "term" : environ.get("term"), # leaders's term
@@ -248,6 +249,7 @@ def listener(skt):
 # Listener  -- Universal Process Message 
 def process_msg(msg, skt):
     global vote_casted
+    global commit_votes_count
     message_type = msg["request"]
     # print("Phase4")
     if message_type == "AppendEntry":#Message from Leader -- valid for follower
@@ -319,7 +321,7 @@ def receive_heartbeat(skt, msg):
     else:
         prev_log_term_local = -1
 
-    print( prev_log_term_local , msg["prevLogTerm"] , len(logs) , msg["prevLogIndex"])
+    print( "PREV LOG TERM(local):: ",prev_log_term_local , "PREV LOG TERM(Heartbeat):: ",msg["prevLogTerm"] , "PREV LOG_LEN:: ", len(logs) , "PREV LOG INDEX(Heartbeat):: ", msg["prevLogIndex"])
     invalid_prev = prev_log_term_local != msg["prevLogTerm"] or len(logs)-1 != msg["prevLogIndex"]
     print("invalid_prev",invalid_prev , "invalid_term",invalid_term)
     if invalid_prev or invalid_term:
