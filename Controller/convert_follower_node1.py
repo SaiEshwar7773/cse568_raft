@@ -31,7 +31,7 @@ entry = {
             "id": 4, 
             "score": 3901
         } 
-msg['entry'] = entry
+msg['entries'] = entry
 
 print(f"Request Created : {msg}")
 
@@ -46,6 +46,7 @@ def set_raft_leader(raft_leader):
     custom_print(environ.get("hostname") ," set leader info at controller to: " , environ.get("raft_leader"))
 
 def process_msg(response_msg, skt):
+    print("process_msg controller", response_msg )
     if response_msg["key"] == "LEADER":
         set_raft_leader(response_msg["value"])  
 
