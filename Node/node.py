@@ -31,7 +31,8 @@ if not exists(FILE_NAME):
 next_index_dict = {}
 match_index_dict = {}
 pending_entries_queue = []
-commit_votes_count = 0
+commit_votes_dict = {}
+leader_stores_received = 0
 
 
 
@@ -101,8 +102,8 @@ def request_vote(skt):
             "request" : "RequestVoteRPC",
             "term" : environ.get("term"),
             "candidate_id": environ.get("hostname"),
-            "prevLogIndex" : -1,
-            "prevLogTerm" : -1 } 
+            "prevLogIndex" : 0,
+            "prevLogTerm" : 0 } 
     msg_bytes = json.dumps(msg).encode('utf-8')
     for target in targets:
         try:
@@ -135,16 +136,17 @@ def set_leader_msg_all_nodes(skt):
             "term" : environ.get("term"),
             "leaderId": environ.get("hostname"),
             "entries" : ["leader_update"],
-            "prevLogIndex" : -1,
-            "prevLogTerm" : -1
+            "prevLogIndex" : 0,
+            "prevLogTerm" : 0
         }
     msg_bytes = json.dumps(msg).encode('utf-8')
     global next_index_dict
     global match_index_dict
+    global commit_index
     next_index_dict = {}
     match_index_dict = {}
     for target in targets:
-            next_index_dict[target] = commit_index + 1
+            next_index_dict[target] = commit_index + 1 
             match_index_dict[target] = 0 
     for target in targets:
         try:
@@ -179,7 +181,7 @@ def save_logs(entry,next_index):
 # Send heartbeats From --- Leader --- to followers
 def send_heartbeat(skt):
     reset_heartbeat_timer("send_heartbeat")
-    global commit_votes_count
+    global commit_votes_dict
     global pending_entries_queue
     msg = {
         "request" : "AppendEntry",
@@ -188,29 +190,24 @@ def send_heartbeat(skt):
         "entries" : []
         }
     while environ.get("raft_state") == "raft_leader":
-        print("commit_votes_count::",commit_votes_count)
-        if commit_votes_count> 0: # log replication happened in last heartbeat
-            if commit_votes_count >= MAJORITY:
-                save_logs(pending_entries_queue.pop(0))
-                next_index_dict[msg["target"]] += 1
-            else:
-                pending_entries_queue.pop(0)
-            commit_votes_count = 0
+        # print("commit_votes_count::",commit_votes_count)
+        # if commit_votes_count> 0: # log replication happened in last heartbeat
         custom_print(" targets::", targets)
         for target in targets:
             msg["leaderCommit"] = commit_index
             msg["prevLogIndex"] = next_index_dict[target] - 1 
+            print("ddddddd",next_index_dict)
             msg["prevLogTerm"] = get_prev_log_term()
+            print("prevLogTermkk", msg["prevLogTerm"])
             eetime = time.time()
             if next_index_dict[target] <= commit_index:
                 with open(FILE_NAME, "r") as file:
                     logs = json.load(file)
-                msg["entries"] = [logs[next_index_dict[target]]]
-                # print(target, "send_heartbeat", "if case", commit_index, next_index_dict)
+                msg["entries"] = [] if next_index_dict[target]-1>len(logs) else 0
             else:
                 if pending_entries_queue:
                     msg["entries"] = [pending_entries_queue[0]]#dequeue will happen if the majority votes 
-                    commit_votes_count = 1 #includes leader itself
+                    commit_votes_dict = 1 #includes leader itself
                 # print(target, "send_heartbeat", "else case" , commit_index, next_index_dict)
             # print(msg["entries"])
             msg_bytes = json.dumps(msg).encode('utf-8')
@@ -249,7 +246,7 @@ def listener(skt):
 # Listener  -- Universal Process Message 
 def process_msg(msg, skt):
     global vote_casted
-    global commit_votes_count
+    
     message_type = msg["request"]
     # print("Phase4")
     if message_type == "AppendEntry":#Message from Leader -- valid for follower
@@ -271,8 +268,9 @@ def process_msg(msg, skt):
         if "follower_id" in msg:
             receive_vote(skt, msg["follower_id"],msg['term'])
     if message_type == "ResponseEntryRPC": 
-        if msg["success"]:
-            commit_votes_count += 1
+        follower_next_log = msg["nextlog"] 
+        follower_target = msg["target"] 
+        receive_heartbeat_response(msg["success"], follower_next_log , follower_target )
     if message_type == "LEADER_INFO": 
         send_leader_info(skt) # no need to respond to the controller -- we are just printing in the console
         msg["key"] = "LEADER"
@@ -290,10 +288,30 @@ def process_msg(msg, skt):
     if message_type == "STORE":
         if environ.get("raft_state") == "raft_leader":
             global pending_entries_queue
+            global commit_votes_dict
+            global leader_stores_received
             pending_entries_queue.append(msg["entry"])
+            commit_votes_dict[leader_stores_received] = 1
         else:
             send_leader_info(skt)
             # print("Phase4::::::::")
+
+def receive_heartbeat_response(success_flag ,follower_next_log , follower_target):
+    if success_flag:
+        global commit_votes_dict
+        if(follower_next_log > next_index_dict[follower_target]):
+            next_index_dict[follower_target]
+        cur_log = follower_next_log-1
+        if cur_log == 0:
+            return
+        print(cur_log, commit_votes_dict)
+        cur_votes = commit_votes_dict[cur_log] + 1
+        commit_votes_dict[cur_log] = cur_votes
+        if cur_votes >= MAJORITY and len(pending_entries_queue):
+            save_logs(pending_entries_queue.pop(0))
+    else:
+        next_index_dict[follower_target] = max(next_index_dict[follower_target]-1, 1 )
+    
 
 # Listen --- Candidate ---- Receive vote
 def receive_vote(skt,voter,term):
@@ -319,9 +337,9 @@ def receive_heartbeat(skt, msg):
     if len(logs)>0:
         prev_log_term_local = logs[-1]["term"]
     else:
-        prev_log_term_local = -1
+        prev_log_term_local = 0
 
-    print( "PREV LOG TERM(local):: ",prev_log_term_local , "PREV LOG TERM(Heartbeat):: ",msg["prevLogTerm"] , "PREV LOG_LEN:: ", len(logs) , "PREV LOG INDEX(Heartbeat):: ", msg["prevLogIndex"])
+    print( "PREV LOG TERM(local):: ", prev_log_term_local , "PREV LOG TERM(Heartbeat):: ",msg["prevLogTerm"] , "PREV LOG_LEN:: ", len(logs) , "PREV LOG INDEX(Heartbeat):: ", msg["prevLogIndex"])
     invalid_prev = prev_log_term_local != msg["prevLogTerm"] or len(logs)-1 != msg["prevLogIndex"]
     print("invalid_prev",invalid_prev , "invalid_term",invalid_term)
     if invalid_prev or invalid_term:
@@ -329,7 +347,8 @@ def receive_heartbeat(skt, msg):
             "request" : "ResponseEntryRPC",
             "term" : environ.get("term"),
             "success" : False,
-            "target" : environ.get("hostname")
+            "target" : environ.get("hostname"),
+            "nextlog" : len(logs)+1
             }
         msg_bytes = json.dumps(msg).encode('utf-8')
         print("Receive heartbeat", "if case")
@@ -340,7 +359,8 @@ def receive_heartbeat(skt, msg):
             "request" : "ResponseEntryRPC",
             "term" : environ.get("term"),
             "success" : True,
-            "target" : environ.get("hostname")
+            "target" : environ.get("hostname"),
+            "nextlog" : len(logs)+1
             }
         msg_bytes = json.dumps(msg).encode('utf-8')
         skt.sendto(msg_bytes, (environ.get("raft_leader"), 5555))
@@ -360,8 +380,8 @@ def cast_vote(skt,target,term):
             "request" : "ResponseVoteRPC",
             "term" : term,
             "follower_id": environ.get("hostname"),
-            "prevLogIndex" : -1,
-            "prevLogTerm" : -1
+            "prevLogIndex" : 0,
+            "prevLogTerm" : 0
         }
         msg_bytes = json.dumps(msg).encode('utf-8')
         skt.sendto(msg_bytes, (target, 5555))
