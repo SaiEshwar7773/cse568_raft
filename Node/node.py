@@ -175,7 +175,6 @@ def save_logs(entry,next_index):
     with open(FILE_NAME, "r") as file:
         logs = json.load(file)
     with open( FILE_NAME , "w") as file:
-        print("Writing log")
         if next_index<len(logs):
             #if no of logs are greater than the next index we have to place the new log into the next index and delete the following logs
             #Receive implementation case 3
@@ -317,12 +316,14 @@ def receive_heartbeat_response(success_flag ,follower_next_log , follower_target
     global next_index_dict
     if success_flag:
         global commit_votes_dict
+        if(follower_next_log == next_index_dict[follower_target]):
+            return
         if(follower_next_log > next_index_dict[follower_target]): #Always true
             next_index_dict[follower_target] =  follower_next_log
         followers_cur_log = follower_next_log-1
         if followers_cur_log == 0:
             return
-        print(followers_cur_log, commit_votes_dict, follower_target) 
+        print("follower node::", follower_target, "followers cur log count::", followers_cur_log, "[log:votes]:: ", commit_votes_dict)
         commit_votes_dict[followers_cur_log] += 1 # Increase the log vote by one
         if commit_votes_dict[followers_cur_log] >= MAJORITY and pending_entries_queue:
             save_logs(pending_entries_queue.pop(0),followers_cur_log)
@@ -363,13 +364,11 @@ def receive_heartbeat(skt, request_msg):
         if request_msg["prevLogIndex"] < commit_index: # excess log deletion
             logs = logs[:request_msg["prevLogIndex"]+1]
             with open(FILE_NAME, "w") as file:
-                print("Writing log")
                 json.dump(logs, file)
         
         elif prev_log_term_local != request_msg["prevLogTerm"]:
             logs.pop()
             with open(FILE_NAME, "w") as file:
-                print("Writing log")
                 json.dump(logs, file)
         custom_print("Writing logs after",logs)
         
@@ -439,7 +438,7 @@ def cast_vote(skt,target,candidate_term, candidate_log_index):
 def set_raft_leader(raft_leader, term):
     environ['raft_leader'] = raft_leader
     environ['term'] = term
-    custom_print(environ.get("hostname") ," set leader to: " , environ.get("raft_leader"))
+    print(environ.get("hostname") ," set leader to: " , environ.get("raft_leader"))
 
 
 def lookout_for_heartbeats():
