@@ -25,7 +25,7 @@ current_term_timeout = STD_TIMEOUT*random.uniform(2,3)
 FILE_NAME = "./logs.json"
  
 # Empty File      
-with open(FILE_NAME, "w") as file:
+with open(FILE_NAME, "w") as file: 
     empty = []
     json.dump(empty, file) 
 
@@ -175,6 +175,7 @@ def save_logs(entry,next_index):
     with open(FILE_NAME, "r") as file:
         logs = json.load(file)
     with open( FILE_NAME , "w") as file:
+        print("Writing log")
         if next_index<len(logs):
             #if no of logs are greater than the next index we have to place the new log into the next index and delete the following logs
             #Receive implementation case 3
@@ -185,40 +186,31 @@ def save_logs(entry,next_index):
 
 # Send heartbeats From --- Leader --- to followers
 def send_heartbeat(skt):
-    reset_heartbeat_timer("send_heartbeat")
-    global commit_votes_dict
+    reset_heartbeat_timer("send_heartbeat") 
     global pending_entries_queue
-    msg = {
-        "request" : "AppendEntry",
-        "term" : environ.get("term"), # leaders's term
-        "leaderId": environ.get("hostname"), # leaders's id
-        "entries" : []
-        }
     while environ.get("raft_state") == "raft_leader":
-        # print("commit_votes_count::",commit_votes_count)
-        # if commit_votes_count> 0: # log replication happened in last heartbeat
         custom_print(" targets::", targets)
+        with open(FILE_NAME, "r") as file:
+                logs = json.load(file)
+                commit_index = len(logs)
         for target in targets:
+            msg = {
+            "request" : "AppendEntry",
+            "term" : environ.get("term"), # leaders's term
+            "leaderId": environ.get("hostname"), # leaders's id
+            "entries" : []
+            }
             msg["leaderCommit"] = commit_index
             msg["prevLogIndex"] = next_index_dict[target] - 1  
             msg["prevLogTerm"] = get_prev_log_term()
-            # print("prevLogTermkk", msg["prevLogTerm"])
-            eetime = time.time()
-            with open(FILE_NAME, "r") as file:
-                logs = json.load(file)
-            if next_index_dict[target] <= commit_index:
-                msg["entries"] = [] if next_index_dict[target]-1>len(logs) else 0
-            else:
-                if pending_entries_queue:
-                    msg["entries"] = [pending_entries_queue[0]]#dequeue will happen if the majority votes 
-                    new_log_no = len(logs)+1
-                    commit_votes_dict[new_log_no] = 1 #includes leader itself
-                # print(target, "send_heartbeat", "else case" , commit_index, next_index_dict)
-            # print(msg["entries"])
+            next_idx_target = next_index_dict[target]
+            if next_index_dict[target] <= len(logs): 
+                msg["entries"] = logs[next_idx_target-1]["entry"]
+            elif next_idx_target<= len(logs) + len(pending_entries_queue): 
+                msg["entries"] =  pending_entries_queue[next_idx_target - len(logs) -1]["entry"] 
             msg_bytes = json.dumps(msg).encode('utf-8')
             try:
-                print(msg, " The entry creation", target)
-                skt.sendto(msg_bytes, (target, 5555))
+                skt.sendto(msg_bytes, (target, 5555)) 
             except Exception as e:
                 print("node probably delted",  e, target)
                 # pass
@@ -252,6 +244,7 @@ def listener(skt):
 # Listener  -- Universal Process Message 
 def process_msg(msg, skt):
     global vote_casted
+    global commit_votes_dict
     
     message_type = msg["request"]
     # print("Phase4")
@@ -264,7 +257,7 @@ def process_msg(msg, skt):
         custom_print("receive heartbeat")
         # if environ.get("raft_state")!="raft_leader":
         if msg["entries"]:
-            print("entries(proces_message):: ", msg["entries"], environ["raft_state"])
+            custom_print("entries(proces_message):: ", msg["entries"], environ["raft_state"])
         reset_heartbeat_timer("process_msg")
         receive_heartbeat(skt, msg)
     if message_type == "RequestVoteRPC":
@@ -296,12 +289,32 @@ def process_msg(msg, skt):
         if environ.get("raft_state") == "raft_leader":
             global pending_entries_queue
             global commit_votes_dict 
-            pending_entries_queue.append(msg["entries"]) 
+            with open(FILE_NAME, "r") as file:
+                logs = json.load(file)
+                new_log_no = len(logs)+len(pending_entries_queue) + 1
+            commit_votes_dict[new_log_no] = 1 #includes leader itself
+            pending_entries_queue.append({ "leader_index": new_log_no,"entry": msg["entries"]}) 
         else:
             send_leader_info(skt)
-            # print("Phase4::::::::")
+    if message_type == "RETRIEVE":
+        if environ.get("raft_state") == "raft_leader" or True:
+            with open(FILE_NAME, "r") as file:
+                logs = json.load(file)
+            response_msg = {
+                "sender name" : environ.get("hostname"),
+                "term": environ.get("term"),
+                "request": "RETRIEVE",
+                "key": "COMMITED_LOGS",
+                "value": logs
+            } 
+            msg_bytes = json.dumps(response_msg).encode('utf-8')
+            skt.sendto(msg_bytes, ("Controller", 5555))
+            print(response_msg)
+        else:
+            send_leader_info(skt)
 
 def receive_heartbeat_response(success_flag ,follower_next_log , follower_target):
+    global next_index_dict
     if success_flag:
         global commit_votes_dict
         if(follower_next_log > next_index_dict[follower_target]): #Always true
@@ -309,7 +322,7 @@ def receive_heartbeat_response(success_flag ,follower_next_log , follower_target
         followers_cur_log = follower_next_log-1
         if followers_cur_log == 0:
             return
-        print(followers_cur_log, commit_votes_dict) 
+        print(followers_cur_log, commit_votes_dict, follower_target) 
         commit_votes_dict[followers_cur_log] += 1 # Increase the log vote by one
         if commit_votes_dict[followers_cur_log] >= MAJORITY and pending_entries_queue:
             save_logs(pending_entries_queue.pop(0),followers_cur_log)
@@ -334,7 +347,7 @@ def receive_heartbeat(skt, request_msg):
     with open(FILE_NAME, "r") as file:
         logs = json.load(file)
     commit_index = len(logs)
-    print("In receive heartbeat, commit_index", commit_index)
+    custom_print("In receive heartbeat, commit_index", commit_index, request_msg )
     invalid_term = environ.get("term") > request_msg["term"]
     custom_print("logs", logs)
     if len(logs)>0:
@@ -342,21 +355,23 @@ def receive_heartbeat(skt, request_msg):
     else:
         prev_log_term_local = 0
 
-    print( "PREV LOG TERM(local):: ", prev_log_term_local , "PREV LOG TERM(Heartbeat):: ",request_msg["prevLogTerm"] , "PREV LOG_LEN:: ", len(logs) , "PREV LOG INDEX(Heartbeat):: ", request_msg["prevLogIndex"])
+    custom_print( "PREV LOG TERM(local):: ", prev_log_term_local , "PREV LOG TERM(Heartbeat):: ",request_msg["prevLogTerm"] , "PREV LOG_LEN:: ", len(logs) , "PREV LOG INDEX(Heartbeat):: ", request_msg["prevLogIndex"])
     invalid_prev = prev_log_term_local != request_msg["prevLogTerm"] or len(logs) != request_msg["prevLogIndex"]
-    print("invalid_prev",invalid_prev , "invalid_term",invalid_term)
+    custom_print("invalid_prev",invalid_prev , "invalid_term",invalid_term)
     if invalid_prev or invalid_term:
-        print("Writing logs before",logs)
+        custom_print("Writing logs before",logs)
         if request_msg["prevLogIndex"] < commit_index: # excess log deletion
             logs = logs[:request_msg["prevLogIndex"]+1]
             with open(FILE_NAME, "w") as file:
+                print("Writing log")
                 json.dump(logs, file)
         
         elif prev_log_term_local != request_msg["prevLogTerm"]:
             logs.pop()
             with open(FILE_NAME, "w") as file:
+                print("Writing log")
                 json.dump(logs, file)
-        print("Writing logs after",logs)
+        custom_print("Writing logs after",logs)
         
         response_msg = {
             "request" : "ResponseEntryRPC",
@@ -370,12 +385,11 @@ def receive_heartbeat(skt, request_msg):
         skt.sendto(msg_bytes, (environ.get("raft_leader"), 5555))
 
     else: 
-        print("Receive heartbeat", "else case")
-        num_logs = len(logs)
+        custom_print("Receive heartbeat", "else case")
+        num_logs = len(logs) 
         if request_msg["entries"]:
-            save_logs(request_msg["entries"],request_msg["prevLogIndex"]+1)
-            num_logs +=1
-        print("Writing logs else",logs)
+            save_logs(request_msg["entries"],request_msg["prevLogIndex"]+1) 
+            num_logs +=1 
         response_msg = {
             "request" : "ResponseEntryRPC",
             "term" : environ.get("term"),
@@ -383,12 +397,12 @@ def receive_heartbeat(skt, request_msg):
             "target" : environ.get("hostname"),
             "nextlog" : num_logs+1
             }
+        
         msg_bytes = json.dumps(response_msg).encode('utf-8')
         skt.sendto(msg_bytes, (environ.get("raft_leader"), 5555))
-        ######
-        print("Reuest msg",request_msg)
+        ###### 
+        # print("Receive heartbeat", "else case",  request_msg )
 
-    print("logs(receive_heartbeat):: ", logs)
         
 
     

@@ -26,6 +26,7 @@ msg['request'] = "LEADER_INFO"
 # msg['request'] = "SHUTDOWN"
 # msg['request'] = "TIMEOUT"
 # msg['request'] = "STORE"
+# msg['request'] = "RETRIEVE"
 
 entry = { 
             "id": 4, 
@@ -90,6 +91,18 @@ try:
     target = environ.get("raft_leader")
     print(f"Controller :sending store request", msg, target)
     skt.sendto(json.dumps(request_msg).encode('utf-8'), (environ.get("raft_leader"), port))
+
+    time.sleep(10)
+    msg['request'] = "RETRIEVE"
+    target = environ.get("raft_leader")
+    print(f"Controller :sending store request", msg, target)
+    skt.sendto(json.dumps(request_msg).encode('utf-8'), (environ.get("raft_leader"), port))
+
+    target = "Node1" if environ.get("raft_leader")!="Node1" else "Node2"
+    time.sleep(5)
+    msg['request'] = "RETRIEVE" 
+    print("Controller :sending retrieve request", msg, environ.get("raft_leader"))
+    skt.sendto(json.dumps(request_msg).encode('utf-8'), (target, port))
 
 except:
     #  socket.gaierror: [Errno -3] would be thrown if target IP container does not exist or exits, write your listener
